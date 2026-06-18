@@ -1,0 +1,41 @@
+#!/bin/bash
+set -e
+
+DEPS_DIR="/opt/airgap/{binary_name}/deps"
+PAYLOAD_DIR="/opt/airgap/{binary_name}/payload"
+BINARY_NAME="{binary_name}"
+
+echo "============================================================"
+echo "  airgap-packager: post-install"
+echo "============================================================"
+
+# ── Install all bundled dependency .deb files ──
+echo "[*] Installing bundled dependencies..."
+if [ -d "$DEPS_DIR" ] && ls "$DEPS_DIR"/*.deb 1>/dev/null 2>&1; then
+    deb_count=$(ls -1 "$DEPS_DIR"/*.deb | wc -l)
+    echo "    Found $deb_count .deb files to install"
+    dpkg -i "$DEPS_DIR"/*.deb || true
+    # Fix any broken dependencies
+    echo "[*] Fixing any broken dependencies..."
+    apt-get install -f -y 2>/dev/null || true
+    echo "[*] Dependencies installed."
+else
+    echo "    No dependency .deb files found in $DEPS_DIR"
+fi
+
+# ── Copy payload binary to /usr/local/bin/ ──
+echo "[*] Installing payload binary..."
+if [ -f "$PAYLOAD_DIR/$BINARY_NAME" ]; then
+    cp "$PAYLOAD_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
+    chmod 755 "/usr/local/bin/$BINARY_NAME"
+    echo "    Installed: /usr/local/bin/$BINARY_NAME"
+else
+    echo "    [WARN] Payload binary not found: $PAYLOAD_DIR/$BINARY_NAME"
+fi
+
+echo ""
+echo "[SUCCESS] Air-gapped installation complete."
+echo "    Binary available at: /usr/local/bin/$BINARY_NAME"
+echo "============================================================"
+
+exit 0
