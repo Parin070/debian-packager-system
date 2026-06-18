@@ -1,0 +1,38 @@
+#!/bin/bash
+set -e
+
+PKG_NAME="#PKG_NAME#"
+INSTALL_DIR="/usr/share/$PKG_NAME"
+VENDOR_DIR="$INSTALL_DIR/vendor"
+LAUNCHER_PATH="/usr/local/bin/$PKG_NAME"
+
+echo "=========================================================="
+echo " Running Post-Installation Dependency Setup (ARM64) "
+echo "=========================================================="
+
+if [ -d "$VENDOR_DIR" ] && [ "$(ls -A "$VENDOR_DIR")" ]; then
+    echo "[*] Found bundled offline dependencies."
+    echo "[*] Running offline pip wheel installation engine..."
+    
+    # Install local wheels completely offline
+    pip3 install --no-index --find-links="$VENDOR_DIR" -r "$INSTALL_DIR/requirements.txt"
+    
+    echo "[+] Dependencies successfully registered."
+else
+    echo "[!] Warning: No offline wheel files detected in $VENDOR_DIR"
+fi
+
+echo "[*] Creating global system launcher link..."
+cat << INNER_EOF > "$LAUNCHER_PATH"
+#!/bin/bash
+python3 $INSTALL_DIR/app.py "\$@"
+INNER_EOF
+
+chmod +x "$LAUNCHER_PATH"
+
+echo "=========================================================="
+echo "[SUCCESS] Installation finalized!"
+echo " Run your application anywhere by typing: $PKG_NAME"
+echo "=========================================================="
+
+exit 0
