@@ -26,7 +26,7 @@ class Builder:
         self.deps_dir = os.path.join(staging_dir, 'deps')
         self.payload_dir = os.path.join(staging_dir, 'payload')
 
-    def build(self, pkg_name, version, description, binary_name, output_path):
+    def build(self, pkg_name, version, description, output_path):
         """
         Build the final .deb package.
 
@@ -34,7 +34,6 @@ class Builder:
             pkg_name:    Package name for the .deb
             version:     Version string
             description: Package description
-            binary_name: Name of the main binary file
             output_path: Where to write the final .deb
         """
         build_root = os.path.join(self.staging_dir, 'build')
@@ -88,7 +87,7 @@ class Builder:
         print(f"    Wrote DEBIAN/control")
 
         # Write DEBIAN/postinst from template
-        self._write_postinst(debian_dir, binary_name)
+        self._write_postinst(debian_dir, pkg_name)
         print(f"    Wrote DEBIAN/postinst")
 
         # Build .deb
@@ -124,14 +123,14 @@ class Builder:
         with open(control_path, 'w', newline='\n') as f:
             f.write(content)
 
-    def _write_postinst(self, debian_dir, binary_name):
+    def _write_postinst(self, debian_dir, pkg_name):
         """Render the postinst script template and write it."""
         template_path = os.path.join(TEMPLATES_DIR, 'postinst')
         with open(template_path, 'r') as f:
             template = f.read()
 
         content = template.format(
-            binary_name=binary_name,
+            pkg_name=pkg_name,
         )
 
         postinst_path = os.path.join(debian_dir, 'postinst')

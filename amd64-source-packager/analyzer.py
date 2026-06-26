@@ -28,20 +28,25 @@ class Analyzer:
         'linux-gate.so.1',
     ])
 
-    def analyze(self, binary_path):
+    def analyze(self, binary_paths):
         """
-        Analyze a binary and return (so_files, packages).
+        Analyze binaries and return (so_files, packages).
 
         Args:
-            binary_path: Absolute path to the ELF binary.
+            binary_paths: List of absolute paths to ELF binaries.
 
         Returns:
-            so_files:  list of resolved .so file paths
+            so_files:  list of resolved .so file paths (deduplicated)
             packages:  set of Debian package names that own those .so files
         """
-        so_files = self._run_ldd(binary_path)
-        packages = self._map_to_packages(so_files)
-        return so_files, packages
+        all_so_files = set()
+        for b_path in binary_paths:
+            so_files = self._run_ldd(b_path)
+            all_so_files.update(so_files)
+        
+        all_so_files_list = list(all_so_files)
+        packages = self._map_to_packages(all_so_files_list)
+        return all_so_files_list, packages
 
     def _run_ldd(self, binary_path):
         """Run ldd on the binary and parse shared library paths."""

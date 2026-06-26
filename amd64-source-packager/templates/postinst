@@ -1,9 +1,8 @@
 #!/bin/bash
 set -e
 
-DEPS_DIR="/opt/airgap/{binary_name}/deps"
-PAYLOAD_DIR="/opt/airgap/{binary_name}/payload"
-BINARY_NAME="{binary_name}"
+DEPS_DIR="/opt/airgap/{pkg_name}/deps"
+PAYLOAD_DIR="/opt/airgap/{pkg_name}/payload"
 
 echo "============================================================"
 echo "  airgap-packager: post-install"
@@ -23,19 +22,23 @@ else
     echo "    No dependency .deb files found in $DEPS_DIR"
 fi
 
-# ── Copy payload binary to /usr/local/bin/ ──
-echo "[*] Installing payload binary..."
-if [ -f "$PAYLOAD_DIR/$BINARY_NAME" ]; then
-    cp "$PAYLOAD_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
-    chmod 755 "/usr/local/bin/$BINARY_NAME"
-    echo "    Installed: /usr/local/bin/$BINARY_NAME"
+# ── Copy payload binaries to /usr/local/bin/ ──
+echo "[*] Installing payload binaries..."
+if [ -d "$PAYLOAD_DIR" ] && [ "$(ls -A "$PAYLOAD_DIR")" ]; then
+    for f in "$PAYLOAD_DIR"/*; do
+        if [ -f "$f" ]; then
+            bname=$(basename "$f")
+            cp "$f" "/usr/local/bin/$bname"
+            chmod 755 "/usr/local/bin/$bname"
+            echo "    Installed: /usr/local/bin/$bname"
+        fi
+    done
 else
-    echo "    [WARN] Payload binary not found: $PAYLOAD_DIR/$BINARY_NAME"
+    echo "    [WARN] Payload directory not found or empty: $PAYLOAD_DIR"
 fi
 
 echo ""
 echo "[SUCCESS] Air-gapped installation complete."
-echo "    Binary available at: /usr/local/bin/$BINARY_NAME"
 echo "============================================================"
 
 exit 0

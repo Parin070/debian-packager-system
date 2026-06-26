@@ -9,7 +9,7 @@ import os
 import sys
 import shutil
 import subprocess
-
+import re
 from analyzer import Analyzer
 from resolver import Resolver
 from downloader import Downloader
@@ -57,8 +57,8 @@ def resolve_real_binary(path):
     sys.exit(1)
 
 
-def find_binary_in_project(project_path):
-    """Find the main executable binary inside a project directory."""
+def find_binaries_in_project(project_path):
+    """Find all executable ELF binaries inside a project directory."""
     # Look for common binary locations
     candidates = []
     for root, dirs, files in os.walk(project_path):
@@ -80,18 +80,7 @@ def find_binary_in_project(project_path):
         print(f"[ERROR] No ELF binary found in project directory: {project_path}")
         sys.exit(1)
 
-    if len(candidates) == 1:
-        return candidates[0]
-
-    # Prefer binaries in bin/ or build/ directories, or at the root
-    for c in candidates:
-        rel = os.path.relpath(c, project_path)
-        if rel.startswith('bin') or rel.startswith('build'):
-            return c
-
-    # Return the first candidate
-    print(f"[INFO] Multiple binaries found, using: {candidates[0]}")
-    return candidates[0]
+    return candidates
 
 
 def get_package_binary(package_name):
@@ -172,7 +161,7 @@ def main():
     print("  airgap-packager")
     print("=" * 60)
 
-    binary_path = None
+    binary_paths = []
     extra_payload_files = []
 
     if args.binary:
@@ -182,7 +171,7 @@ def main():
             sys.exit(1)
         print(f"[*] Input type: binary")
         print(f"    Path: {binary_path}")
-        binary_path = resolve_real_binary(binary_path)
+        binary_paths = [resolve_real_binary(binary_path)]
 
     elif args.project:
         project_path = os.path.abspath(args.project)
@@ -191,17 +180,25 @@ def main():
             sys.exit(1)
         print(f"[*] Input type: project directory")
         print(f"    Path: {project_path}")
-        binary_path = find_binary_in_project(project_path)
-        print(f"    Detected binary: {binary_path}")
+        binary_paths = find_binaries_in_project(project_path)
+        print(f"    Detected {len(binary_paths)} binaries")
+        for b in binary_paths:
+            print(f"      - {b}")
 
     elif args.package:
         print(f"[*] Input type: installed package")
         print(f"    Package: {args.package}")
-        binary_path = get_package_binary(args.package)
-        print(f"    Detected binary: {binary_path}")
+        binary_paths = [get_package_binary(args.package)]
+        print(f"    Detected binary: {binary_paths[0]}")
 
     # Derive package name
-    pkg_name = args.name or os.path.basename(binary_path)
+    if args.name:
+        pkg_name = args.name
+    elif args.project:
+        pkg_name = os.path.basename(os.path.abspath(args.project))
+    else:
+        pkg_name = os.path.basename(binary_paths[0])
+    pkg_name = re.sub(r'[^a-z0-9\-\+\.]', '-', pkg_name.lower())
     output_path = args.output or f"{pkg_name}-airgap.deb"
     staging_dir = f'/tmp/airgap-staging-{pkg_name}'
     description = args.description or f"Air-gapped package for {pkg_name}"
@@ -217,7 +214,7 @@ def main():
     print("[Step 1/5] Analyzing binary dependencies (ldd + dpkg -S)")
     print("-" * 60)
     analyzer = Analyzer()
-    so_files, dep_packages = analyzer.analyze(binary_path)
+    so_files, dep_packages = analyzer.analyze(binary_paths)
     print(f"    Found {len(so_files)} shared libraries")
     print(f"    Mapped to {len(dep_packages)} packages")
     for pkg in sorted(dep_packages):
@@ -247,10 +244,11 @@ def main():
     print("-" * 60)
     payload_dir = os.path.join(staging_dir, 'payload')
     os.makedirs(payload_dir, exist_ok=True)
-    dest = os.path.join(payload_dir, os.path.basename(binary_path))
-    shutil.copy2(binary_path, dest)
-    os.chmod(dest, 0o755)
-    print(f"    Copied {binary_path} -> {dest}")
+    for b_path in binary_paths:
+        dest = os.path.join(payload_dir, os.path.basename(b_path))
+        shutil.copy2(b_path, dest)
+        os.chmod(dest, 0o755)
+        print(f"    Copied {b_path} -> {dest}")
     print()
 
     # ── Step 6: Build .deb ──
@@ -262,7 +260,6 @@ def main():
         pkg_name=pkg_name,
         version=args.version,
         description=description,
-        binary_name=os.path.basename(binary_path),
         output_path=output_path
     )
     print()
