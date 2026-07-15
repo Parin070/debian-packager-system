@@ -26,7 +26,7 @@ class Builder:
         self.deps_dir = os.path.join(staging_dir, 'deps')
         self.payload_dir = os.path.join(staging_dir, 'payload')
 
-    def build(self, pkg_name, version, description, output_path):
+    def build(self, pkg_name, version, description, output_path, config=None):
         """
         Build the final .deb package.
 
@@ -35,7 +35,10 @@ class Builder:
             version:     Version string
             description: Package description
             output_path: Where to write the final .deb
+            config:      Package configuration dict (optional)
         """
+        if config is None:
+            config = {}
         build_root = os.path.join(self.staging_dir, 'build')
 
         # Clean previous build
@@ -69,12 +72,17 @@ class Builder:
         # Copy payload binary
         payload_count = 0
         if os.path.isdir(self.payload_dir):
-            for f in os.listdir(self.payload_dir):
-                src = os.path.join(self.payload_dir, f)
-                dst = os.path.join(opt_payload, f)
-                shutil.copy2(src, dst)
-                os.chmod(dst, 0o755)
-                payload_count += 1
+            if config.get('install_mode', 'flat') == 'structured':
+                shutil.copytree(self.payload_dir, opt_payload, dirs_exist_ok=True)
+                for root, _, files in os.walk(self.payload_dir):
+                    payload_count += len(files)
+            else:
+                for f in os.listdir(self.payload_dir):
+                    src = os.path.join(self.payload_dir, f)
+                    dst = os.path.join(opt_payload, f)
+                    shutil.copy2(src, dst)
+                    os.chmod(dst, 0o755)
+                    payload_count += 1
         print(f"    Packed {payload_count} payload file(s)")
 
         # Calculate installed size (in KB)
@@ -87,7 +95,7 @@ class Builder:
         print(f"    Wrote DEBIAN/control")
 
         # Write DEBIAN/postinst from template
-        self._write_postinst(debian_dir, pkg_name)
+        self._write_postinst(debian_dir, pkg_name, config)
         print(f"    Wrote DEBIAN/postinst")
 
         # Build .deb
@@ -123,15 +131,71 @@ class Builder:
         with open(control_path, 'w', newline='\n') as f:
             f.write(content)
 
-    def _write_postinst(self, debian_dir, pkg_name):
+    def _write_postinst(self, debian_dir, pkg_name, config):
         """Render the postinst script template and write it."""
         template_path = os.path.join(TEMPLATES_DIR, 'postinst')
         with open(template_path, 'r') as f:
             template = f.read()
 
-        content = template.format(
-            pkg_name=pkg_name,
-        )
+        install_mode = config.get('install_mode', 'flat')
+        install_prefix = config.get('install_prefix', '/usr/local/bin')
+
+        if install_mode == 'structured':
+            payload_install_snippet = f"""echo "[*] Installing structured payload to {install_prefix}..."
+if [ -d "$PAYLOAD_DIR" ] && [ "$(ls -A "$PAYLOAD_DIR")" ]; then
+    mkdir -p "{install_prefix}"
+    cp -r "$PAYLOAD_DIR"/* "{install_prefix}/"
+    echo "    Installed structured payload to {install_prefix}"
+else
+    echo "    [WARN] Payload directory not found or empty: $PAYLOAD_DIR"
+fi"""
+        else:
+            payload_install_snippet = """echo "[*] Installing payload binaries..."
+if [ -d "$PAYLOAD_DIR" ] && [ "$(ls -A "$PAYLOAD_DIR")" ]; then
+    for f in "$PAYLOAD_DIR"/*; do
+        if [ -f "$f" ]; then
+            bname=$(basename "$f")
+            cp "$f" "/usr/local/bin/$bname"
+            chmod 755 "/usr/local/bin/$bname"
+            echo "    Installed: /usr/local/bin/$bname"
+        fi
+    done
+else
+    echo "    [WARN] Payload directory not found or empty: $PAYLOAD_DIR"
+fi"""
+
+        kernel_module_snippet = ""
+        kernel_module = config.get('kernel_module')
+        if kernel_module:
+            kernel_module_snippet = f"""
+echo "[*] Loading kernel module {kernel_module}..."
+MOD_PATH="{install_prefix}/{kernel_module}"
+if [ -f "$MOD_PATH" ]; then
+    insmod "$MOD_PATH" || modprobe "$(basename "{kernel_module}" .ko)" || echo "    [WARN] Failed to load kernel module"
+else
+    echo "    [WARN] Kernel module not found at $MOD_PATH"
+fi"""
+
+        verify_snippet = ""
+        verify_commands = config.get('verify_commands', [])
+        if verify_commands:
+            verify_cmds_bash = ""
+            for cmd in verify_commands:
+                verify_cmds_bash += f"""
+    echo "    Running: {cmd}"
+    if {cmd}; then
+        echo "      -> PASS"
+    else
+        echo "      -> FAIL (Warning only)"
+    fi"""
+            verify_snippet = f"""
+echo "[*] Running post-install verification..."{verify_cmds_bash}
+"""
+
+        content = template.replace('{pkg_name}', pkg_name)
+        content = content.replace('# __PAYLOAD_INSTALL_SNIPPET__', payload_install_snippet)
+        content = content.replace('# __KERNEL_MODULE_SNIPPET__', kernel_module_snippet)
+        content = content.replace('# __VERIFY_SNIPPET__', verify_snippet)
 
         postinst_path = os.path.join(debian_dir, 'postinst')
         with open(postinst_path, 'w', newline='\n') as f:

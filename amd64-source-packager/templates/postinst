@@ -22,20 +22,10 @@ else
     echo "    No dependency .deb files found in $DEPS_DIR"
 fi
 
-# ── Copy payload binaries to /usr/local/bin/ ──
-echo "[*] Installing payload binaries..."
-if [ -d "$PAYLOAD_DIR" ] && [ "$(ls -A "$PAYLOAD_DIR")" ]; then
-    for f in "$PAYLOAD_DIR"/*; do
-        if [ -f "$f" ]; then
-            bname=$(basename "$f")
-            cp "$f" "/usr/local/bin/$bname"
-            chmod 755 "/usr/local/bin/$bname"
-            echo "    Installed: /usr/local/bin/$bname"
-        fi
-    done
-else
-    echo "    [WARN] Payload directory not found or empty: $PAYLOAD_DIR"
-fi
+# ── Install payload ──
+# __PAYLOAD_INSTALL_SNIPPET__
+# __KERNEL_MODULE_SNIPPET__
+# __VERIFY_SNIPPET__
 
 echo ""
 echo "[SUCCESS] Air-gapped installation complete."

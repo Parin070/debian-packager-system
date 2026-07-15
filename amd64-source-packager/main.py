@@ -10,6 +10,7 @@ import sys
 import shutil
 import subprocess
 import re
+import json
 from analyzer import Analyzer
 from resolver import Resolver
 from downloader import Downloader
@@ -191,6 +192,14 @@ def main():
         binary_paths = [get_package_binary(args.package)]
         print(f"    Detected binary: {binary_paths[0]}")
 
+    config = {}
+    if args.project:
+        manifest_path = os.path.join(project_path, 'packager.json')
+        if os.path.isfile(manifest_path):
+            with open(manifest_path, 'r') as f:
+                config = json.load(f)
+            print(f"[*] Loaded package manifest: {manifest_path}")
+
     # Derive package name
     if args.name:
         pkg_name = args.name
@@ -243,12 +252,20 @@ def main():
     print("[Step 4/5] Preparing payload")
     print("-" * 60)
     payload_dir = os.path.join(staging_dir, 'payload')
-    os.makedirs(payload_dir, exist_ok=True)
-    for b_path in binary_paths:
-        dest = os.path.join(payload_dir, os.path.basename(b_path))
-        shutil.copy2(b_path, dest)
-        os.chmod(dest, 0o755)
-        print(f"    Copied {b_path} -> {dest}")
+    install_mode = config.get('install_mode', 'flat')
+    if install_mode == 'structured' and args.project:
+        payload_source = config.get('payload_source', project_path)
+        if os.path.exists(payload_dir):
+            shutil.rmtree(payload_dir)
+        shutil.copytree(payload_source, payload_dir, ignore=shutil.ignore_patterns('.git', 'packager.json'))
+        print(f"    Copied structured payload from {payload_source} -> {payload_dir}")
+    else:
+        os.makedirs(payload_dir, exist_ok=True)
+        for b_path in binary_paths:
+            dest = os.path.join(payload_dir, os.path.basename(b_path))
+            shutil.copy2(b_path, dest)
+            os.chmod(dest, 0o755)
+            print(f"    Copied {b_path} -> {dest}")
     print()
 
     # ── Step 6: Build .deb ──
@@ -260,7 +277,8 @@ def main():
         pkg_name=pkg_name,
         version=args.version,
         description=description,
-        output_path=output_path
+        output_path=output_path,
+        config=config
     )
     print()
 
