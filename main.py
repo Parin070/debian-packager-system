@@ -22,13 +22,13 @@ def prompt(msg, options=None):
 
 def main():
     print("=" * 60)
-    print("        airgap-packager")
+    print("        Universal Airgap Packager Wizard")
     print("=" * 60)
     print()
 
     print("Target architecture:")
     print("  [1] amd64  — x86_64 (standard desktop/server)")
-    print("  [2] arm64  — aarch64 (Raspberry Pi, ARM servers)")
+    print("  [2] arm64  — aarch64 (Raspberry Pi, ARM servers, Edge nodes)")
     print()
     arch = prompt("Select [1/2]: ", options=['1', '2'])
     print()
@@ -40,6 +40,7 @@ def main():
 
 
 def _run_amd64():
+    # Leaving the AMD64 flow completely untouched as requested
     print("── amd64 mode ──")
     print()
 
@@ -77,21 +78,46 @@ def _run_arm64():
     print("── arm64 mode ──")
     print()
 
-    path = prompt("Python project directory path: ")
-    name = prompt("Package name: ")
-    version = input("Version [default: 1.0.0]: ").strip() or '1.0.0'
-    description = input("Description [default: Packaged Python app]: ").strip() or 'Packaged Python app'
+    print("Input pathway configuration type:")
+    print("  [1] Binary/Directory — path to an ELF binary or a folder of compiled tools")
+    print("  [2] Project Source   — path to a Python project layout folder")
+    print("  [3] Debian Package   — name of an installed system package to mirror")
+    print()
+    choice = prompt("Select Input Type [1/2/3]: ", options=['1', '2', '3'])
     print()
 
-    args = [
-        sys.executable, ARM64_MAIN,
-        '--path', path,
+    # Collect custom naming and description metadata
+    name = prompt("Package name (e.g., pfring-suite): ")
+    version = input("Version [default: 1.0.0]: ").strip() or '1.0.0'
+    description = input("Description [default: Universal ARM64 offline bundle]: ").strip() or 'Universal ARM64 offline bundle'
+    print()
+
+    args = [sys.executable, ARM64_MAIN]
+
+    if choice == '1':
+        path_input = prompt("Enter path to compiled binary or framework tools folder: ")
+        # Safely expand the '~' to the full home directory path
+        abs_path = os.path.abspath(os.path.expanduser(path_input))
+        args += ['--binary', abs_path]
+
+    elif choice == '2':
+        path_input = prompt("Python project directory path: ")
+        # Safely expand the '~' for Python projects too
+        abs_path = os.path.abspath(os.path.expanduser(path_input))
+        args += ['--path', abs_path]
+
+    elif choice == '3':
+        pkg_input = prompt("Target package name: ")
+        args += ['--package', pkg_input]
+    
+    # Append the metadata arguments
+    args += [
         '--name', name,
         '--version', version,
         '--description', description,
     ]
 
-    print()
+    print("[*] Launching underlying core cross-architecture build engines...")
     subprocess.run(args)
 
 
