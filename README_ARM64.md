@@ -1,3 +1,5 @@
+Here is the completely corrected and properly formatted markdown code block. Every header, table, and spacing element has been strictly standardized to ensure it renders flawlessly in Visual Studio Code and GitHub.
+
 ```markdown
 # ARM64 Cross-Architecture Offline Packager
 
@@ -11,10 +13,10 @@ This tool is engineered to run natively on an internet-connected AMD64 host. It 
 
 To successfully package and deploy software, the build and deployment environments must meet the following baseline specifications:
 
-| Environment | Architecture | Network State | Required Packages & Core Tools | 
-| ----- | ----- | ----- | ----- | 
-| **Build Host** | `amd64` (x86_64) | **Online** | Python 3.6+, `binutils` (provides `readelf`), `dpkg`, `apt-cache`, `apt-get`. Must be a Debian/Ubuntu OS. | 
-| **Target Node** | `arm64` (aarch64) | **Air-Gapped** | `dpkg` (Standard on all Debian/Ubuntu systems). No internet access required. | 
+| Environment | Architecture | Network State | Required Packages & Core Tools |
+| :--- | :--- | :--- | :--- |
+| **Build Host** | `amd64` (x86_64) | **Online** | Python 3.6+, `binutils` (provides `readelf`), `dpkg`, `apt-cache`, `apt-get`. Must be a Debian/Ubuntu OS. |
+| **Target Node** | `arm64` (aarch64) | **Air-Gapped** | `dpkg` (Standard on all Debian/Ubuntu systems). No internet access required. |
 
 > **OS Parity Requirement:** For maximum stability, the AMD64 Build Host should run the same major OS distribution version (e.g., Ubuntu 22.04 LTS) as the Target Node. This guarantees kernel and C-runtime (`glibc`) compatibility when targeted libraries are fetched from the upstream repositories.
 
@@ -25,6 +27,7 @@ To successfully package and deploy software, the build and deployment environmen
 To circumvent the limitations of standard cross-compilation packaging, this platform leverages the native structural mechanics of Debian packages. 
 
 The output `.deb` file acts as a delivery mechanism. It contains:
+
 1. **`DEBIAN/control`**: Dynamically generated metadata enforcing the `Architecture: arm64` constraint.
 2. **`data.tar` Structure**: The core executable binaries mapped to `/usr/bin/` and a nested cache of cross-downloaded `.deb` dependencies stored securely inside `/opt/airgap/<name>/deps/`.
 3. **`DEBIAN/postinst` Script**: A maintainer script injected into the package. Upon installation on the target machine, this script extracts the nested dependencies and invokes `dpkg -i` to install them locally before finalizing the deployment via `ldconfig`.
@@ -36,13 +39,9 @@ The output `.deb` file acts as a delivery mechanism. It contains:
 The system follows a strictly linear, pipeline-based architecture:
 
 1. **Input Ingestion (`main.py`):** An interactive CLI validates the input modality (binary path, project folder, or installed package). It performs mandatory string sanitization to strip invisible whitespace and carriage returns, preventing `dpkg-deb` from encountering malformed field errors during compilation.
-
 2. **Static Analysis (`analyzer.py`):** Traditional dynamic analysis (`ldd`) crashes when executed against foreign architectures. Instead, the analyzer employs `readelf -d` to statically parse the ELF headers and extract `(NEEDED)` shared libraries. It filters out virtual kernel objects (e.g., `linux-vdso.so.1`) and maps the remaining logical libraries to their root Debian packages using `dpkg -S`.
-
 3. **BFS Resolution (`resolver.py`):** The system queries `apt-cache depends <package>:arm64` to establish the dependency graph. It utilizes a Breadth-First Search (BFS) to map the entire target tree, capturing both `Depends` and `PreDepends`. It actively filters out optional bloat (`--recommends`, `--suggests`), meta-packages, and core system essentials (e.g., `base-files`) while tracking visited nodes to prevent circular loops.
-
 4. **Cross-Acquisition (`downloader.py`):** The module forces multi-architecture downloads by appending the `:arm64` suffix to `apt-get download` requests. This forces the repository mirrors to deliver `aarch64` compiled binaries into a local staging cache without installing them on the AMD64 host.
-
 5. **Assembly (`builder.py`):** Structures the cache into a Debian root filesystem layout, dynamically generates the metadata, injects the executable installer scripts (`chmod 0o755`), and compiles the final `.deb` artifact using `dpkg-deb --build`.
 
 ---
