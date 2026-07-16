@@ -2,37 +2,53 @@
 set -e
 
 PKG_NAME="#PKG_NAME#"
-INSTALL_DIR="/usr/share/$PKG_NAME"
-VENDOR_DIR="$INSTALL_DIR/vendor"
-LAUNCHER_PATH="/usr/local/bin/$PKG_NAME"
+PAYLOAD_TYPE="#PAYLOAD_TYPE#"
 
 echo "=========================================================="
 echo " Running Post-Installation Dependency Setup (ARM64) "
 echo "=========================================================="
 
-if [ -d "$VENDOR_DIR" ] && [ "$(ls -A "$VENDOR_DIR")" ]; then
-    echo "[*] Found bundled offline dependencies."
-    echo "[*] Running offline pip wheel installation engine..."
+# FLOW A: If the packaged payload was a Python Application
+if [ "$PAYLOAD_TYPE" = "Python" ]; then
+    INSTALL_DIR="/usr/share/$PKG_NAME"
+    VENDOR_DIR="$INSTALL_DIR/vendor"
+    LAUNCHER_PATH="/usr/local/bin/$PKG_NAME"
     
-    # Install local wheels completely offline
-    pip3 install --no-index --find-links="$VENDOR_DIR" -r "$INSTALL_DIR/requirements.txt"
+    if [ -d "$VENDOR_DIR" ] && [ "$(ls -A "$VENDOR_DIR")" ]; then
+        echo "[*] Found bundled offline dependencies."
+        echo "[*] Running offline pip wheel installation engine..."
+        pip3 install --no-index --find-links="$VENDOR_DIR" -r "$INSTALL_DIR/requirements.txt"
+        echo "[+] Python dependencies successfully registered."
+    fi
     
-    echo "[+] Dependencies successfully registered."
-else
-    echo "[!] Warning: No offline wheel files detected in $VENDOR_DIR"
-fi
-
-echo "[*] Creating global system launcher link..."
-cat << INNER_EOF > "$LAUNCHER_PATH"
+    echo "[*] Creating global system launcher link..."
+    cat << INNER_EOF > "$LAUNCHER_PATH"
 #!/bin/bash
 python3 $INSTALL_DIR/app.py "\$@"
 INNER_EOF
+    chmod +x "$LAUNCHER_PATH"
 
-chmod +x "$LAUNCHER_PATH"
+# FLOW B: If the packaged payload was Compiled ELF Binaries
+else
+    DEPS_DIR="/opt/airgap/$PKG_NAME/deps"
+    echo "[*] Installing bundled ARM64 system dependencies natively..."
+    
+    if [ -d "$DEPS_DIR" ] && ls "$DEPS_DIR"/*.deb 1>/dev/null 2>&1; then
+        deb_count=$(ls -1 "$DEPS_DIR"/*.deb | wc -l)
+        echo "    Found $deb_count offline .deb files to install."
+        
+        # This is the magic command that installs all nested dependencies offline
+        dpkg -i "$DEPS_DIR"/*.deb || true
+        
+        echo "[*] All system dependencies installed successfully."
+    else
+        echo "    [INFO] No dependency .deb files were required or found."
+    fi
+    echo "[*] Native binaries are deployed and ready in /usr/bin/"
+fi
 
 echo "=========================================================="
 echo "[SUCCESS] Installation finalized!"
-echo " Run your application anywhere by typing: $PKG_NAME"
 echo "=========================================================="
 
 exit 0

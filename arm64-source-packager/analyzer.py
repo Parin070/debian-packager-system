@@ -5,9 +5,8 @@ import re
 import sys
 
 class Analyzer:
-    _LDD_LINE_RE = re.compile(r'^\s*(\S+)\s+=>\s+(\S+)\s+\(0x[0-9a-fA-F]+\)')
-    _LDD_DIRECT_RE = re.compile(r'^\s*(/\S+)\s+\(0x[0-9a-fA-F]+\)')
-    _SKIP_NAMES = frozenset(['linux-vdso.so.1', 'linux-gate.so.1'])
+    # UPDATED: Parses readelf -d output for NEEDED shared libraries
+    _READELF_RE = re.compile(r'\(NEEDED\)\s+Shared library:\s+\[(.*?)\]')
 
     def analyze_source(self, project_path):
         if not os.path.isdir(project_path):
@@ -18,34 +17,23 @@ class Analyzer:
     def analyze_binary_deps(self, binary_paths):
         all_so_files = set()
         for b_path in binary_paths:
-            so_files = self._run_ldd(b_path)
+            so_files = self._run_readelf(b_path)
             all_so_files.update(so_files)
         
         return self._map_to_packages(list(all_so_files))
 
-    def _run_ldd(self, binary_path):
-        print(f"    Running: ldd {binary_path}")
+    def _run_readelf(self, binary_path):
+        """Statically analyzes an ELF binary (cross-architecture safe)"""
+        print(f"    Static Analysis (readelf): {binary_path}")
         try:
-            result = subprocess.run(['ldd', binary_path], capture_output=True, text=True, check=True)
+            result = subprocess.run(['readelf', '-d', binary_path], capture_output=True, text=True, check=True)
         except subprocess.CalledProcessError as e:
-            if 'not a dynamic executable' in (e.stderr or '') or 'not a dynamic executable' in (e.stdout or ''):
-                print("    [INFO] Static binary detected. No shared library dependencies.")
-                return []
-            print(f"[ERROR] ldd failed: {e.stderr.strip()}")
-            sys.exit(1)
+            print(f"[WARN] readelf failed or file is not a dynamic ELF: {binary_path}")
+            return []
 
         so_files = []
         for line in result.stdout.splitlines():
-            line = line.strip()
-            if any(skip in line for skip in self._SKIP_NAMES):
-                continue
-            match = self._LDD_LINE_RE.match(line)
-            if match:
-                resolved_path = match.group(2)
-                if resolved_path and resolved_path != 'not' and not resolved_path.startswith('('):
-                    so_files.append(resolved_path)
-                continue
-            match = self._LDD_DIRECT_RE.match(line)
+            match = self._READELF_RE.search(line)
             if match:
                 so_files.append(match.group(1))
         return so_files
@@ -53,12 +41,27 @@ class Analyzer:
     def _map_to_packages(self, so_files):
         if not so_files:
             return set()
+        
         packages = set()
-        print(f"    Mapping {len(so_files)} libraries to tracked packages via dpkg -S...")
-        for so_path in so_files:
+        print(f"    Mapping {len(so_files)} extracted libraries to standard host packages...")
+        
+        # Core injection: Binaries always need the standard C runtime
+        packages.add("libc6")
+        
+        for so_name in so_files:
+            # Skip PF_RING custom compiled libraries
+            if "libpfring" in so_name:
+                continue
+                
             try:
-                result = subprocess.run(['dpkg', '-S', so_path], capture_output=True, text=True, check=True)
-                for line in result.stdout.strip().splitlines():
+                # Use dpkg -S on the raw filename to find its parent package
+                result = subprocess.run(['dpkg', '-S', so_name], capture_output=True, text=True, check=True)
+                lines = result.stdout.strip().splitlines()
+                
+                for line in lines:
+                    if "diversion" in line.lower() or "diverted" in line.lower():
+                        continue
+                    
                     if ':' in line:
                         pkg_part = line.split(':')[0].strip()
                         for pkg in pkg_part.split(','):
@@ -66,5 +69,7 @@ class Analyzer:
                             if pkg:
                                 packages.add(pkg)
             except subprocess.CalledProcessError:
-                continue
+                pass
+                
+        print(f"    [*] Base mapped packages: {packages}")
         return packages

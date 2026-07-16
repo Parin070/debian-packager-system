@@ -11,6 +11,28 @@ from resolver import Resolver
 from downloader import Downloader
 from builder import Builder
 
+def is_elf_binary(path):
+    """Check if a file is an ELF binary by reading its magic bytes."""
+    try:
+        with open(path, 'rb') as f:
+            magic = f.read(4)
+        return magic == b'\x7fELF'
+    except (IOError, PermissionError):
+        return False
+
+def find_binaries_in_dir(dir_path):
+    """Recursively search for and return all executable ELF binaries in a directory."""
+    candidates = []
+    for root, dirs, files in os.walk(dir_path):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for f in files:
+            fpath = os.path.join(root, f)
+            # Exclude source, headers, and intermediate build objects
+            if os.access(fpath, os.X_OK) and not f.endswith(('.py', '.sh', '.md', '.txt', '.cfg', '.ini', '.h', '.c', '.cpp', '.o', '.a', '.la', '.lo')):
+                if is_elf_binary(fpath):
+                    candidates.append(fpath)
+    return candidates
+
 def get_package_binary(package_name):
     try:
         result = subprocess.run(['dpkg', '-L', package_name], capture_output=True, text=True, check=True)
@@ -32,7 +54,7 @@ def main():
     parser = argparse.ArgumentParser(description="Universal ARM64 Air-Gapped Package System")
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--path", help="Path to Python source directory layout.")
-    input_group.add_argument("--binary", help="Path to native compiled ELF binary executable asset.")
+    input_group.add_argument("--binary", nargs='+', help="Path(s) to ELF binaries or directory containing binaries.")
     input_group.add_argument("--package", help="Name of a Debian package to mirror recursively.")
     
     parser.add_argument("--name", help="Custom name assignment identifier for your output package.")
@@ -75,7 +97,25 @@ def main():
 
     else:
         if args.binary:
-            binary_paths = [os.path.abspath(args.binary)]
+            resolved_paths = []
+            for item in args.binary:
+                abs_item = os.path.abspath(item)
+                if os.path.isdir(abs_item):
+                    print(f"[*] Input target is a directory. Scanning for ELF binaries inside: {abs_item}")
+                    found = find_binaries_in_dir(abs_item)
+                    print(f"    -> Successfully discovered {len(found)} compiled binary executable(s).")
+                    resolved_paths.extend(found)
+                elif os.path.isfile(abs_item):
+                    if is_elf_binary(abs_item):
+                        resolved_paths.append(abs_item)
+                    else:
+                        print(f"[WARN] Skipping non-ELF file: {abs_item}")
+            binary_paths = resolved_paths
+
+            if not binary_paths:
+                print("[ERROR] Failed to discover any valid compiled ELF binaries in the specified targets.")
+                sys.exit(1)
+                
         elif args.package:
             print(f"[*] Resolving system binaries tracked inside package: {args.package}")
             binary_paths = get_package_binary(args.package)
@@ -85,6 +125,7 @@ def main():
             
         pkg_name = re.sub(r'[^a-z0-9\-\+\.]', '-', pkg_name.lower()).strip('-')
         
+        # Pass the newly discovered array of files directly to the analyzer
         seed_packages = analyzer.analyze_binary_deps(binary_paths)
         if args.package:
             seed_packages.add(args.package.strip().replace('\n', '').replace('\r', ''))

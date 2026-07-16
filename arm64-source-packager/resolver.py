@@ -13,7 +13,7 @@ class Resolver:
         visited = set()
         queue = list(seed_packages)
 
-        print(f"    Seed packages for tree resolution: {len(seed_packages)}")
+        print(f"    Seed packages for ARM64 tree resolution: {len(seed_packages)}")
         while queue:
             pkg = queue.pop(0).strip()
             if not pkg or pkg in visited or self._SKIP_PATTERNS.match(pkg):
@@ -22,19 +22,22 @@ class Resolver:
             visited.add(pkg)
             all_deps.add(pkg)
 
+            # Query the dependencies specifically for the ARM64 package variant
             deps = self._get_depends(pkg)
             for dep in deps:
                 if dep not in visited and dep not in self._SKIP_PACKAGES:
                     queue.append(dep)
 
-        print(f"    Total recursive packages mapped: {len(all_deps)}")
+        print(f"    Total recursive ARM64 packages mapped via BFS: {len(all_deps)}")
         return all_deps
 
     def _get_depends(self, package_name):
         try:
+            # Force the architecture constraint (package:arm64) for accurate tracking
+            target = f"{package_name}:arm64"
             result = subprocess.run(
                 ['apt-cache', 'depends', '--no-recommends', '--no-suggests', 
-                 '--no-conflicts', '--no-breaks', '--no-replaces', package_name],
+                 '--no-conflicts', '--no-breaks', '--no-replaces', target],
                 capture_output=True, text=True, check=True
             )
         except subprocess.CalledProcessError:
