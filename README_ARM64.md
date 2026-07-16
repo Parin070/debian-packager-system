@@ -1,6 +1,3 @@
-Here is the completely corrected and properly formatted markdown code block. Every header, table, and spacing element has been strictly standardized to ensure it renders flawlessly in Visual Studio Code and GitHub.
-
-```markdown
 # ARM64 Cross-Architecture Offline Packager
 
 A specialized deployment engine designed to bundle ARM64 (`aarch64`) compiled applications—including complex directory toolchains and Python projects—into standalone `.deb` installers.
@@ -58,7 +55,6 @@ cd ~/python-arm64-packager
 
 # 2. Launch the interactive orchestration wizard
 python3 main.py
-
 ```
 
 **Wizard Prompts:**
@@ -75,7 +71,6 @@ Transfer the generated `.deb` file (via USB or secure physical media) to the iso
 ```bash
 # 1. Standard offline installation via the Debian Package Manager
 sudo dpkg -i pfring-suite_1.0.0_arm64.deb
-
 ```
 
 **Troubleshooting & File Conflicts:**
@@ -83,7 +78,6 @@ If you are upgrading an existing package and `dpkg` halts with a *"trying to ove
 
 ```bash
 sudo dpkg -i --force-overwrite pfring-suite_1.0.0_arm64.deb
-
 ```
 
 *(Optional)* **Post-Install Verification for Network Tools:**
@@ -92,7 +86,6 @@ For tools requiring network socket binding, identify the active network interfac
 ```bash
 ip a
 sudo pfcount -i eth0
-
 ```
 
 ---
@@ -105,13 +98,11 @@ sudo pfcount -i eth0
 * **Objective:** Verify the tool can scan an entire framework directory, extract multiple executables, and map complex low-level dependencies natively.
 * **Execution:** Pointed the wizard (Option `[1] Binary/Directory`) to `~/PF_RING/userland/examples`.
 * **System Response:**
-* Recursively scanned the directory, successfully bypassing `Makefile`, `.c`, and `.h` source files.
-* Identified 16 distinct ELF binaries (including `pfcount`, `pfsend`, `pfbridge`).
-* `readelf` statically identified critical kernel/memory libraries (`libc.so.6`, `libnl-3.so.200`, `libnuma.so.1`).
-* Mapped these files to standard Debian packages (`libc6`, `libnl-3-20`, `libnuma1`) and resolved their sub-dependencies.
-* *Note:* The system logged a controlled failure for host cross-compilers (`libc6-arm64-cross`), correctly ignoring it as native ARM64 targets do not require cross-compilation suites to execute.
-
-
+  * Recursively scanned the directory, successfully bypassing `Makefile`, `.c`, and `.h` source files.
+  * Identified 16 distinct ELF binaries (including `pfcount`, `pfsend`, `pfbridge`).
+  * `readelf` statically identified critical kernel/memory libraries (`libc.so.6`, `libnl-3.so.200`, `libnuma.so.1`).
+  * Mapped these files to standard Debian packages (`libc6`, `libnl-3-20`, `libnuma1`) and resolved their sub-dependencies.
+  * *Note:* The system logged a controlled failure for host cross-compilers (`libc6-arm64-cross`), correctly ignoring it as native ARM64 targets do not require cross-compilation suites to execute.
 * **Result:** Output a unified `pfring-suite_1.0.0_arm64.deb`. Upon execution of `dpkg -i` on the target node, the `postinst` script executed `ldconfig` to register the bundled dependencies, allowing `pfcount` to execute instantly and bind to `eth0`.
 
 ### Test Case B: Offline Python Project Bundling
@@ -119,11 +110,9 @@ sudo pfcount -i eth0
 * **Objective:** Verify the tool can package Python source code and successfully cross-fetch ARM64 wheel dependencies while running on an AMD64 host.
 * **Execution:** Pointed the wizard (Option `[2] Project Source`) to a Python workspace containing a valid `requirements.txt` manifest.
 * **System Response:**
-* Detected the Python execution flow based on user selection.
-* Executed `pip download --only-binary=:all: --platform manylinux2014_aarch64` to pull architecture-specific `.whl` files into a local staging `vendor/` directory, bypassing host installation.
-* Dynamically configured the `postinst` installer script for a Python-specific payload deployment.
-
-
+  * Detected the Python execution flow based on user selection.
+  * Executed `pip download --only-binary=:all: --platform manylinux2014_aarch64` to pull architecture-specific `.whl` files into a local staging `vendor/` directory, bypassing host installation.
+  * Dynamically configured the `postinst` installer script for a Python-specific payload deployment.
 * **Result:** Output a `.deb` package. When deployed on the offline target node, the embedded `postinst` script successfully executed `pip3 install --no-index --find-links=vendor/`, ensuring the Python application was operational without attempting to reach the public PyPI indexing servers.
 
 ---
@@ -137,7 +126,3 @@ While highly robust for standard deployments, system administrators should be aw
 3. **System Service Daemons:** If packaged binaries require dedicated `systemd` services to launch automatically on boot, those `.service` files currently must be added manually to the staging directories prior to the final assembly phase.
 4. **Cross-Compiler Artifact Logging:** During analysis, the system may log warnings regarding host cross-compiler packages (e.g., `libc6-arm64-cross`) failing to download via `apt-get`. This is expected behavior and will not impact final target deployment.
 5. **Distribution Lock:** Currently, the resolution engine is rigidly coupled to Debian/Ubuntu package managers (`dpkg` and `apt-cache`). Expanding this framework to support `rpm` (RedHat/CentOS) or `pacman` (Arch) would require further abstraction of the underlying system calls.
-
-```
-
-```
