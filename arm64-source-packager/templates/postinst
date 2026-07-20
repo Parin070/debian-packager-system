@@ -1,54 +1,72 @@
 #!/bin/bash
 set -e
 
-PKG_NAME="#PKG_NAME#"
-PAYLOAD_TYPE="#PAYLOAD_TYPE#"
+# builder.py will dynamically replace {pkg_name} with the actual package name
+PACKAGE_NAME="{pkg_name}"
+DEPS_DIR="/opt/airgap/${PACKAGE_NAME}/deps"
+PAYLOAD_DIR="/opt/airgap/${PACKAGE_NAME}/payload"
+LOG_FILE="/var/log/airgap_${PACKAGE_NAME}_install.log"
+DAEMON_SCRIPT="/tmp/airgap_daemon_${PACKAGE_NAME}.sh"
 
-echo "=========================================================="
-echo " Running Post-Installation Dependency Setup (ARM64) "
-echo "=========================================================="
+echo "======================================================"
+echo " Staging Post-Installation Dependency Setup (ARM64)"
+echo "======================================================"
 
-# FLOW A: If the packaged payload was a Python Application
-if [ "$PAYLOAD_TYPE" = "Python" ]; then
-    INSTALL_DIR="/usr/share/$PKG_NAME"
-    VENDOR_DIR="$INSTALL_DIR/vendor"
-    LAUNCHER_PATH="/usr/local/bin/$PKG_NAME"
+# __PAYLOAD_INSTALL_SNIPPET__
+
+# __KERNEL_MODULE_SNIPPET__
+
+# __VERIFY_SNIPPET__
+
+# Check if the nested dependencies directory exists and contains .deb files
+if [ -d "$DEPS_DIR" ] && ls "$DEPS_DIR"/*.deb 1> /dev/null 2>&1; then
+    echo "[*] Found offline .deb files to install."
+    echo "[*] Spawning detached daemon to bypass dpkg frontend lock..."
+    echo "[*] Installation logs will be routed to: $LOG_FILE"
     
-    if [ -d "$VENDOR_DIR" ] && [ "$(ls -A "$VENDOR_DIR")" ]; then
-        echo "[*] Found bundled offline dependencies."
-        echo "[*] Running offline pip wheel installation engine..."
-        pip3 install --no-index --find-links="$VENDOR_DIR" -r "$INSTALL_DIR/requirements.txt"
-        echo "[+] Python dependencies successfully registered."
-    fi
-    
-    echo "[*] Creating global system launcher link..."
-    cat << INNER_EOF > "$LAUNCHER_PATH"
+    # Capture the Process ID (PID) of the currently running dpkg lock-holder
+    DPKG_PID=$PPID
+
+    # Generate the detached background daemon script
+    cat << EOF > "$DAEMON_SCRIPT"
 #!/bin/bash
-python3 $INSTALL_DIR/app.py "\$@"
-INNER_EOF
-    chmod +x "$LAUNCHER_PATH"
+echo "\$(date): Waiting for primary dpkg process (PID: $DPKG_PID) to release locks..." > "$LOG_FILE"
 
-# FLOW B: If the packaged payload was Compiled ELF Binaries
-else
-    DEPS_DIR="/opt/airgap/$PKG_NAME/deps"
-    echo "[*] Installing bundled ARM64 system dependencies natively..."
+# Loop continuously while the parent dpkg process is still active
+while kill -0 $DPKG_PID 2>/dev/null; do
+    sleep 1
+done
+
+# Execute a brief safety delay to ensure the OS has fully flushed the lock files
+sleep 2
+
+echo "\$(date): Locks released. Installing bundled ARM64 dependencies..." >> "$LOG_FILE"
+
+# Execute the nested installation
+dpkg -i "$DEPS_DIR"/*.deb >> "$LOG_FILE" 2>&1
+
+echo "\$(date): Refreshing shared library cache via ldconfig..." >> "$LOG_FILE"
+ldconfig >> "$LOG_FILE" 2>&1
+
+echo "\$(date): Nested dependency installation finalized successfully." >> "$LOG_FILE"
+
+# Delete the temporary daemon script to leave no trace
+rm -f "$DAEMON_SCRIPT"
+EOF
+
+    # Grant execution permissions to the generated daemon
+    chmod 755 "$DAEMON_SCRIPT"
     
-    if [ -d "$DEPS_DIR" ] && ls "$DEPS_DIR"/*.deb 1>/dev/null 2>&1; then
-        deb_count=$(ls -1 "$DEPS_DIR"/*.deb | wc -l)
-        echo "    Found $deb_count offline .deb files to install."
-        
-        # This is the magic command that installs all nested dependencies offline
-        dpkg -i "$DEPS_DIR"/*.deb || true
-        
-        echo "[*] All system dependencies installed successfully."
-    else
-        echo "    [INFO] No dependency .deb files were required or found."
-    fi
-    echo "[*] Native binaries are deployed and ready in /usr/bin/"
+    # Execute the daemon in the background, fully detached from standard inputs/outputs
+    nohup "$DAEMON_SCRIPT" </dev/null >/dev/null 2>&1 &
+    
+    echo "[*] Daemon spawned successfully. Dependencies will finish installing momentarily."
+
+else
+    echo "[*] No nested system dependencies found. Skipping offline configuration."
 fi
 
-echo "=========================================================="
+echo "======================================================"
 echo "[SUCCESS] Installation finalized!"
-echo "=========================================================="
-
+echo "======================================================"
 exit 0

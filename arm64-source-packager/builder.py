@@ -1,78 +1,222 @@
 #!/usr/bin/env python3
+"""
+builder.py — Assembles the staging directory into a proper Debian package
+structure and builds the final .deb using dpkg-deb --build.
+"""
+
 import os
 import shutil
+import stat
 import subprocess
+import sys
+
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
 
+
 class Builder:
-    def build_package(self, pkg_name, version, description, output_path, project_path=None, binary_paths=None, vendor_dir=None):
-        build_root = f"./tmp_build_{pkg_name}"
+    """Assemble staging files and build the final .deb package."""
+
+    def __init__(self, staging_dir='staging'):
+        """
+        Args:
+            staging_dir: Root staging directory containing deps/ and payload/. 
+                         Defaults to 'staging' if not provided by main.py.
+        """
+        self.staging_dir = staging_dir
+        self.deps_dir = os.path.join(staging_dir, 'deps')
+        self.payload_dir = os.path.join(staging_dir, 'payload')
+
+    def build(self, pkg_name, version, description, output_path, config=None):
+        """
+        Build the final .deb package.
+
+        Args:
+            pkg_name:    Package name for the .deb
+            version:     Version string
+            description: Package description
+            output_path: Where to write the final .deb
+            config:      Package configuration dict (optional)
+        """
+        if config is None:
+            config = {}
+        build_root = os.path.join(self.staging_dir, 'build')
+
+        # Clean previous build
         if os.path.exists(build_root):
             shutil.rmtree(build_root)
-        os.makedirs(build_root, exist_ok=True)
 
-        payload_type = "Binary"
+        # Create directory structure inside the .deb
+        #   /opt/airgap/deps/    — all dependency .deb files
+        #   /opt/airgap/payload/ — the main binary
+        #   DEBIAN/control       — package metadata
+        #   DEBIAN/postinst      — post-install script
+        opt_deps = os.path.join(build_root, 'opt', 'airgap', pkg_name, 'deps')
+        opt_payload = os.path.join(build_root, 'opt', 'airgap', pkg_name, 'payload')
+        debian_dir = os.path.join(build_root, 'DEBIAN')
 
-        # FLOW A: Python Project Staging
-        if project_path:
-            payload_type = "Python"
-            share_dir = os.path.join(build_root, "usr", "share", pkg_name)
-            os.makedirs(share_dir, exist_ok=True)
-            shutil.copytree(project_path, share_dir, dirs_exist_ok=True)
-            if vendor_dir and os.path.exists(vendor_dir):
-                shutil.copytree(vendor_dir, os.path.join(share_dir, "vendor"), dirs_exist_ok=True)
-
-        # FLOW B & C: Universal Compiled Binaries, Libraries, and Packages
-        elif binary_paths:
-            bin_dir = os.path.join(build_root, "usr", "bin")
-            os.makedirs(bin_dir, exist_ok=True)
-            
-            for b_path in binary_paths:
-                target_name = os.path.basename(b_path)
-                shutil.copy2(b_path, os.path.join(bin_dir, target_name))
-                os.chmod(os.path.join(bin_dir, target_name), 0o755)
-
-            opt_deps = os.path.join(build_root, "opt", "airgap", pkg_name, "deps")
-            os.makedirs(opt_deps, exist_ok=True)
-            if vendor_dir and os.path.exists(vendor_dir):
-                for f in os.listdir(vendor_dir):
-                    if f.endswith('.deb'):
-                        shutil.copy2(os.path.join(vendor_dir, f), os.path.join(opt_deps, f))
-
-        # Metadata Assembly
-        debian_dir = os.path.join(build_root, "DEBIAN")
+        os.makedirs(opt_deps, exist_ok=True)
+        os.makedirs(opt_payload, exist_ok=True)
         os.makedirs(debian_dir, exist_ok=True)
 
-        # FIX: Directly writing the control file with the mandatory Maintainer field
-        control_content = (
-            f"Package: {pkg_name}\n"
-            f"Version: {version}\n"
-            f"Architecture: arm64\n"
-            f"Maintainer: Airgap Admin <admin@localhost>\n"
-            f"Description: {description}\n"
-        )
-        with open(os.path.join(debian_dir, "control"), "w", newline='\n') as f:
-            f.write(control_content)
+        # Copy dependency .deb files
+        deb_count = 0
+        if os.path.isdir(self.deps_dir):
+            for f in os.listdir(self.deps_dir):
+                if f.endswith('.deb'):
+                    src = os.path.join(self.deps_dir, f)
+                    dst = os.path.join(opt_deps, f)
+                    shutil.copy2(src, dst)
+                    deb_count += 1
+        print(f"    Packed {deb_count} dependency .deb files")
 
-        # Render DEBIAN/postinst
-        with open(os.path.join(TEMPLATES_DIR, "postinst"), "r") as f:
-            postinst_template = f.read()
-        
-        postinst_runtime = postinst_template.replace("#PKG_NAME#", pkg_name).replace("#PAYLOAD_TYPE#", payload_type)
-        postinst_path = os.path.join(debian_dir, "postinst")
-        with open(postinst_path, "w", newline='\n') as f:
-            f.write(postinst_runtime)
+        # Copy payload binary
+        payload_count = 0
+        if os.path.isdir(self.payload_dir):
+            if config.get('install_mode', 'flat') == 'structured':
+                shutil.copytree(self.payload_dir, opt_payload, dirs_exist_ok=True)
+                
+                # Enforce execution permissions for all files in structured mode
+                for root, _, files in os.walk(opt_payload):
+                    for f in files:
+                        os.chmod(os.path.join(root, f), 0o755)
+                        
+                for root, _, files in os.walk(self.payload_dir):
+                    payload_count += len(files)
+            else:
+                for f in os.listdir(self.payload_dir):
+                    src = os.path.join(self.payload_dir, f)
+                    dst = os.path.join(opt_payload, f)
+                    shutil.copy2(src, dst)
+                    os.chmod(dst, 0o755)
+                    payload_count += 1
+        print(f"    Packed {payload_count} payload file(s)")
+
+        # Calculate installed size (in KB)
+        installed_size = self._dir_size_kb(build_root)
+
+        # Write DEBIAN/control from template
+        self._write_control(
+            debian_dir, pkg_name, version, description, installed_size
+        )
+        print(f"    Wrote DEBIAN/control")
+
+        # Write DEBIAN/postinst from template
+        self._write_postinst(debian_dir, pkg_name, config)
+        print(f"    Wrote DEBIAN/postinst")
+
+        # Build .deb
+        output_path = os.path.abspath(output_path)
+        print(f"    Running: dpkg-deb --build {build_root} {output_path}")
+        try:
+            result = subprocess.run(
+                ['dpkg-deb', '--build', build_root, output_path],
+                capture_output=True, text=True, check=True
+            )
+            print(f"    {result.stdout.strip()}")
+        except FileNotFoundError:
+            print("[ERROR] 'dpkg-deb' not found. This tool requires a Debian/Ubuntu system.")
+            sys.exit(1)
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] dpkg-deb failed: {e.stderr.strip()}")
+            sys.exit(1)
+
+    def _write_control(self, debian_dir, pkg_name, version, description, installed_size):
+        """Render the control file template and write it."""
+        template_path = os.path.join(TEMPLATES_DIR, 'control')
+        with open(template_path, 'r') as f:
+            template = f.read()
+
+        content = template.format(
+            package=pkg_name,
+            version=version,
+            installed_size=installed_size,
+            description=description,
+        )
+
+        control_path = os.path.join(debian_dir, 'control')
+        with open(control_path, 'w', newline='\n') as f:
+            f.write(content)
+
+    def _write_postinst(self, debian_dir, pkg_name, config):
+        """Render the postinst script template and write it."""
+        template_path = os.path.join(TEMPLATES_DIR, 'postinst')
+        with open(template_path, 'r') as f:
+            template = f.read()
+
+        install_mode = config.get('install_mode', 'flat')
+        install_prefix = config.get('install_prefix', '/usr/bin')
+
+        if install_mode == 'structured':
+            payload_install_snippet = f"""echo "[*] Installing structured payload to {install_prefix}..."
+if [ -d "$PAYLOAD_DIR" ] && [ "$(ls -A "$PAYLOAD_DIR")" ]; then
+    mkdir -p "{install_prefix}"
+    cp -r "$PAYLOAD_DIR"/* "{install_prefix}/"
+    echo "    Installed structured payload to {install_prefix}"
+else
+    echo "    [WARN] Payload directory not found or empty: $PAYLOAD_DIR"
+fi"""
+        else:
+            payload_install_snippet = f"""echo "[*] Installing payload binaries..."
+if [ -d "$PAYLOAD_DIR" ] && [ "$(ls -A "$PAYLOAD_DIR")" ]; then
+    for f in "$PAYLOAD_DIR"/*; do
+        if [ -f "$f" ]; then
+            bname=$(basename "$f")
+            cp "$f" "{install_prefix}/$bname"
+            chmod 755 "{install_prefix}/$bname"
+            echo "    Installed: {install_prefix}/$bname"
+        fi
+    done
+else
+    echo "    [WARN] Payload directory not found or empty: $PAYLOAD_DIR"
+fi"""
+
+        kernel_module_snippet = ""
+        kernel_module = config.get('kernel_module')
+        if kernel_module:
+            kernel_module_snippet = f"""
+echo "[*] Loading kernel module {kernel_module}..."
+MOD_PATH="{install_prefix}/{kernel_module}"
+if [ -f "$MOD_PATH" ]; then
+    insmod "$MOD_PATH" || modprobe "$(basename "{kernel_module}" .ko)" || echo "    [WARN] Failed to load kernel module"
+else
+    echo "    [WARN] Kernel module not found at $MOD_PATH"
+fi"""
+
+        verify_snippet = ""
+        verify_commands = config.get('verify_commands', [])
+        if verify_commands:
+            verify_cmds_bash = ""
+            for cmd in verify_commands:
+                verify_cmds_bash += f"""
+    echo "    Running: {cmd}"
+    if {cmd}; then
+        echo "      -> PASS"
+    else
+        echo "      -> FAIL (Warning only)"
+    fi"""
+            verify_snippet = f"""
+echo "[*] Running post-install verification..."{verify_cmds_bash}
+"""
+
+        content = template.replace('{pkg_name}', pkg_name)
+        content = content.replace('# __PAYLOAD_INSTALL_SNIPPET__', payload_install_snippet)
+        content = content.replace('# __KERNEL_MODULE_SNIPPET__', kernel_module_snippet)
+        content = content.replace('# __VERIFY_SNIPPET__', verify_snippet)
+
+        postinst_path = os.path.join(debian_dir, 'postinst')
+        with open(postinst_path, 'w', newline='\n') as f:
+            f.write(content)
+        # postinst must be executable
         os.chmod(postinst_path, 0o755)
 
-        print(f"[*] Assembling package via dpkg-deb for arm64 target architecture...")
-        try:
-            subprocess.run(["dpkg-deb", "--build", build_root, output_path], check=True)
-            print(f"[SUCCESS] Package built successfully: {output_path}")
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"[-] Package assembly failed: {e}")
-            return False
-        finally:
-            if os.path.exists(build_root):
-                shutil.rmtree(build_root)
+    @staticmethod
+    def _dir_size_kb(path):
+        """Calculate total size of a directory tree in kilobytes."""
+        total = 0
+        for dirpath, dirnames, filenames in os.walk(path):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                if os.path.isfile(fp):
+                    total += os.path.getsize(fp)
+        return total // 1024

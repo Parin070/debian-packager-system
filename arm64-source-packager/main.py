@@ -10,6 +10,7 @@ from analyzer import Analyzer
 from resolver import Resolver
 from downloader import Downloader
 from builder import Builder
+from compiler import Compiler
 
 def is_elf_binary(path):
     """Check if a file is an ELF binary by reading its magic bytes."""
@@ -56,6 +57,7 @@ def main():
     input_group.add_argument("--path", help="Path to Python source directory layout.")
     input_group.add_argument("--binary", nargs='+', help="Path(s) to ELF binaries or directory containing binaries.")
     input_group.add_argument("--package", help="Name of a Debian package to mirror recursively.")
+    input_group.add_argument("--build-c", help="Path to C/C++ source code directory containing a Makefile.")
     
     parser.add_argument("--name", help="Custom name assignment identifier for your output package.")
     parser.add_argument("--version", default="1.0.0", help="Version identifier string (Default: 1.0.0)")
@@ -67,6 +69,7 @@ def main():
     resolver = Resolver()
     downloader = Downloader()
     builder = Builder()
+    compiler = Compiler()
     
     binary_paths = []
     project_path = None
@@ -74,6 +77,9 @@ def main():
     pkg_name = args.name.strip().replace('\n', '').replace('\r', '') if args.name else None
     pkg_version = args.version.strip().replace('\n', '').replace('\r', '')
     pkg_description = args.description.strip().replace('\n', ' ').replace('\r', ' ')
+
+    success = False
+    output_deb = ""
 
     if args.path:
         project_path = os.path.abspath(args.path)
@@ -83,17 +89,84 @@ def main():
             pkg_name = os.path.basename(project_path).strip().replace('\n', '').replace('\r', '')
             
         pkg_name = re.sub(r'[^a-z0-9\-\+\.]', '-', pkg_name.lower()).strip('-')
-        temp_cache = f"./tmp_vendor_cache_{pkg_name}"
-        if not downloader.download_arm64_wheels(project_path, temp_cache):
-            shutil.rmtree(temp_cache, ignore_errors=True)
+        
+        staging_dir = os.path.abspath(f"./tmp_staging_{pkg_name}")
+        deps_dir = os.path.join(staging_dir, 'deps')
+        payload_dir = os.path.join(staging_dir, 'payload')
+        os.makedirs(deps_dir, exist_ok=True)
+        os.makedirs(payload_dir, exist_ok=True)
+
+        if not downloader.download_arm64_wheels(project_path, deps_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
             sys.exit(1)
             
+        shutil.copytree(project_path, payload_dir, dirs_exist_ok=True)
+
         output_deb = f"{pkg_name}_{pkg_version}_arm64.deb"
-        success = builder.build_package(
-            pkg_name=pkg_name, version=pkg_version, description=pkg_description,
-            output_path=output_deb, project_path=project_path, vendor_dir=temp_cache
+        
+        builder = Builder(staging_dir=staging_dir)
+        builder.build(
+            pkg_name=pkg_name, 
+            version=pkg_version, 
+            description=pkg_description,
+            output_path=output_deb, 
+            config={'install_mode': 'structured'}
         )
-        shutil.rmtree(temp_cache, ignore_errors=True)
+        
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        success = True
+
+    elif args.build_c:
+        source_path = os.path.abspath(args.build_c)
+        
+        # 1. Trigger the cross-compilation
+        compiler.cross_compile_make(source_path)
+        
+        # 2. Find the newly built ARM64 binaries inside that folder
+        print(f"[*] Scanning for newly compiled ARM64 ELF binaries in: {source_path}")
+        binary_paths = find_binaries_in_dir(source_path)
+        
+        if not binary_paths:
+            print("[ERROR] No compiled ELF binaries found after running make.")
+            sys.exit(1)
+            
+        print(f"    -> Successfully discovered {len(binary_paths)} ARM64 executable(s).")
+        
+        # 3. Use the first binary found to name the package (if not provided)
+        if not pkg_name:
+            pkg_name = os.path.basename(binary_paths[0]).strip().replace('\n', '').replace('\r', '')
+            
+        pkg_name = re.sub(r'[^a-z0-9\-\+\.]', '-', pkg_name.lower()).strip('-')
+        
+        # 4. Set up staging directories
+        staging_dir = os.path.abspath(f"./tmp_staging_{pkg_name}")
+        deps_dir = os.path.join(staging_dir, 'deps')
+        payload_dir = os.path.join(staging_dir, 'payload')
+        os.makedirs(deps_dir, exist_ok=True)
+        os.makedirs(payload_dir, exist_ok=True)
+
+        # 5. Analyze the newly built ARM binaries for dependencies
+        seed_packages = analyzer.analyze_binary_deps(binary_paths)
+        all_deps = resolver.resolve(seed_packages)
+        
+        # 6. Download dependencies and copy the fresh binaries into staging
+        downloader.download_arm64_debs(all_deps, deps_dir)
+        for bp in binary_paths:
+            shutil.copy2(bp, payload_dir)
+        
+        # 7. Build the final .deb
+        output_deb = f"{pkg_name}_{pkg_version}_arm64.deb"
+        builder = Builder(staging_dir=staging_dir)
+        builder.build(
+            pkg_name=pkg_name, 
+            version=pkg_version, 
+            description=pkg_description,
+            output_path=output_deb, 
+            config={'install_mode': 'flat', 'install_prefix': '/usr/bin'}
+        )
+        
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        success = True
 
     else:
         if args.binary:
@@ -125,22 +198,36 @@ def main():
             
         pkg_name = re.sub(r'[^a-z0-9\-\+\.]', '-', pkg_name.lower()).strip('-')
         
-        # Pass the newly discovered array of files directly to the analyzer
+        staging_dir = os.path.abspath(f"./tmp_staging_{pkg_name}")
+        deps_dir = os.path.join(staging_dir, 'deps')
+        payload_dir = os.path.join(staging_dir, 'payload')
+        os.makedirs(deps_dir, exist_ok=True)
+        os.makedirs(payload_dir, exist_ok=True)
+
         seed_packages = analyzer.analyze_binary_deps(binary_paths)
         if args.package:
             seed_packages.add(args.package.strip().replace('\n', '').replace('\r', ''))
             
         all_deps = resolver.resolve(seed_packages)
         
-        temp_cache = f"./tmp_vendor_cache_{pkg_name}"
-        downloader.download_arm64_debs(all_deps, temp_cache)
+        downloader.download_arm64_debs(all_deps, deps_dir)
+        
+        for bp in binary_paths:
+            shutil.copy2(bp, payload_dir)
         
         output_deb = f"{pkg_name}_{pkg_version}_arm64.deb"
-        success = builder.build_package(
-            pkg_name=pkg_name, version=pkg_version, description=pkg_description,
-            output_path=output_deb, binary_paths=binary_paths, vendor_dir=temp_cache
+        
+        builder = Builder(staging_dir=staging_dir)
+        builder.build(
+            pkg_name=pkg_name, 
+            version=pkg_version, 
+            description=pkg_description,
+            output_path=output_deb, 
+            config={'install_mode': 'flat', 'install_prefix': '/usr/bin'}
         )
-        shutil.rmtree(temp_cache, ignore_errors=True)
+        
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        success = True
 
     if success:
         print(f"\n[SUCCESS] Universal ARM64 bundle complete. Target file: {output_deb}")
