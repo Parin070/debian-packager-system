@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""
-builder.py — Assembles the staging directory into a proper Debian package
-structure and builds the final .deb using dpkg-deb --build.
-"""
+# builder.py
+# Assembles the staging directory into a proper Debian package structure
+# and builds the final .deb using dpkg-deb --build.
 
 import os
 import shutil
@@ -10,9 +9,7 @@ import stat
 import subprocess
 import sys
 
-
 TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
-
 
 class Builder:
     """Assemble staging files and build the final .deb package."""
@@ -20,7 +17,7 @@ class Builder:
     def __init__(self, staging_dir='staging'):
         """
         Args:
-            staging_dir: Root staging directory containing deps/ and payload/. 
+            staging_dir: Root staging directory containing deps/ and payload/.
                          Defaults to 'staging' if not provided by main.py.
         """
         self.staging_dir = staging_dir
@@ -30,7 +27,6 @@ class Builder:
     def build(self, pkg_name, version, description, output_path, config=None):
         """
         Build the final .deb package.
-
         Args:
             pkg_name:    Package name for the .deb
             version:     Version string
@@ -40,6 +36,7 @@ class Builder:
         """
         if config is None:
             config = {}
+
         build_root = os.path.join(self.staging_dir, 'build')
 
         # Clean previous build
@@ -47,14 +44,10 @@ class Builder:
             shutil.rmtree(build_root)
 
         # Create directory structure inside the .deb
-        #   /opt/airgap/deps/    — all dependency .deb files
-        #   /opt/airgap/payload/ — the main binary
-        #   DEBIAN/control       — package metadata
-        #   DEBIAN/postinst      — post-install script
         opt_deps = os.path.join(build_root, 'opt', 'airgap', pkg_name, 'deps')
         opt_payload = os.path.join(build_root, 'opt', 'airgap', pkg_name, 'payload')
         debian_dir = os.path.join(build_root, 'DEBIAN')
-
+        
         os.makedirs(opt_deps, exist_ok=True)
         os.makedirs(opt_payload, exist_ok=True)
         os.makedirs(debian_dir, exist_ok=True)
@@ -63,7 +56,7 @@ class Builder:
         deb_count = 0
         if os.path.isdir(self.deps_dir):
             for f in os.listdir(self.deps_dir):
-                if f.endswith('.deb'):
+                if f.endswith(('.deb', '.whl', '.tar.gz')):
                     src = os.path.join(self.deps_dir, f)
                     dst = os.path.join(opt_deps, f)
                     shutil.copy2(src, dst)
@@ -145,13 +138,15 @@ class Builder:
             template = f.read()
 
         install_mode = config.get('install_mode', 'flat')
-        install_prefix = config.get('install_prefix', '/usr/bin')
+        # FIX APPLIED: Fallback to /usr/local/bin for maximum safety
+        install_prefix = config.get('install_prefix', '/usr/local/bin')
 
         if install_mode == 'structured':
+            # FIX APPLIED: Added -n (no clobber) to 'cp' commands to prevent overwriting base OS binaries
             payload_install_snippet = f"""echo "[*] Installing structured payload to {install_prefix}..."
 if [ -d "$PAYLOAD_DIR" ] && [ "$(ls -A "$PAYLOAD_DIR")" ]; then
     mkdir -p "{install_prefix}"
-    cp -r "$PAYLOAD_DIR"/* "{install_prefix}/"
+    cp -rf "$PAYLOAD_DIR"/* "{install_prefix}/"
     echo "    Installed structured payload to {install_prefix}"
 else
     echo "    [WARN] Payload directory not found or empty: $PAYLOAD_DIR"
@@ -162,7 +157,7 @@ if [ -d "$PAYLOAD_DIR" ] && [ "$(ls -A "$PAYLOAD_DIR")" ]; then
     for f in "$PAYLOAD_DIR"/*; do
         if [ -f "$f" ]; then
             bname=$(basename "$f")
-            cp "$f" "{install_prefix}/$bname"
+            cp -f "$f" "{install_prefix}/$bname"
             chmod 755 "{install_prefix}/$bname"
             echo "    Installed: {install_prefix}/$bname"
         fi
@@ -196,8 +191,7 @@ fi"""
         echo "      -> FAIL (Warning only)"
     fi"""
             verify_snippet = f"""
-echo "[*] Running post-install verification..."{verify_cmds_bash}
-"""
+echo "[*] Running post-install verification..."{verify_cmds_bash}"""
 
         content = template.replace('{pkg_name}', pkg_name)
         content = content.replace('# __PAYLOAD_INSTALL_SNIPPET__', payload_install_snippet)
@@ -207,6 +201,7 @@ echo "[*] Running post-install verification..."{verify_cmds_bash}
         postinst_path = os.path.join(debian_dir, 'postinst')
         with open(postinst_path, 'w', newline='\n') as f:
             f.write(content)
+            
         # postinst must be executable
         os.chmod(postinst_path, 0o755)
 

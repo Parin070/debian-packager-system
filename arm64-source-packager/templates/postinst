@@ -13,14 +13,12 @@ echo " Staging Post-Installation Dependency Setup (ARM64)"
 echo "======================================================"
 
 # __PAYLOAD_INSTALL_SNIPPET__
-
 # __KERNEL_MODULE_SNIPPET__
-
 # __VERIFY_SNIPPET__
 
-# Check if the nested dependencies directory exists and contains .deb files
-if [ -d "$DEPS_DIR" ] && ls "$DEPS_DIR"/*.deb 1> /dev/null 2>&1; then
-    echo "[*] Found offline .deb files to install."
+# Check if the nested dependencies directory exists and contains files
+if [ -d "$DEPS_DIR" ] && [ "$(ls -A "$DEPS_DIR")" ]; then
+    echo "[*] Found offline dependency files to install."
     echo "[*] Spawning detached daemon to bypass dpkg frontend lock..."
     echo "[*] Installation logs will be routed to: $LOG_FILE"
     
@@ -42,8 +40,23 @@ sleep 2
 
 echo "\$(date): Locks released. Installing bundled ARM64 dependencies..." >> "$LOG_FILE"
 
-# Execute the nested installation
-dpkg -i "$DEPS_DIR"/*.deb >> "$LOG_FILE" 2>&1
+# Execute the nested installation (.deb files)
+if ls "$DEPS_DIR"/*.deb 1> /dev/null 2>&1; then
+    dpkg -i "$DEPS_DIR"/*.deb >> "$LOG_FILE" 2>&1
+fi
+
+# Execute the Python Wheel installation (.whl files)
+if ls "$DEPS_DIR"/*.whl 1> /dev/null 2>&1; then
+    echo "\$(date): Installing Python Wheel dependencies via pip..." >> "$LOG_FILE"
+    
+    # Verify pip3 is available on the target VM
+    if command -v pip3 &> /dev/null; then
+        # Force pip to install locally from the airgapped folder without checking PyPI
+        pip3 install --no-index --find-links="$DEPS_DIR" "$DEPS_DIR"/*.whl >> "$LOG_FILE" 2>&1
+    else
+        echo "\$(date): [ERROR] pip3 is missing! Python dependencies could not be installed." >> "$LOG_FILE"
+    fi
+fi
 
 echo "\$(date): Refreshing shared library cache via ldconfig..." >> "$LOG_FILE"
 ldconfig >> "$LOG_FILE" 2>&1
@@ -61,7 +74,13 @@ EOF
     nohup "$DAEMON_SCRIPT" </dev/null >/dev/null 2>&1 &
     
     echo "[*] Daemon spawned successfully. Dependencies will finish installing momentarily."
-
+    echo ""
+    echo "****************************************************************"
+    echo " [!] ACTION REQUIRED: PLEASE WAIT 10-15 SECONDS"
+    echo "     Do not execute your software immediately! The background"
+    echo "     daemon is still silently unpacking core libraries."
+    echo "****************************************************************"
+    echo ""
 else
     echo "[*] No nested system dependencies found. Skipping offline configuration."
 fi

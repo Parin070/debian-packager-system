@@ -5,7 +5,7 @@ import re
 import sys
 
 class Analyzer:
-    # UPDATED: Parses readelf -d output for NEEDED shared libraries
+    # Parses readelf -d output for NEEDED shared libraries
     _READELF_RE = re.compile(r'\(NEEDED\)\s+Shared library:\s+\[(.*?)\]')
 
     def analyze_source(self, project_path):
@@ -30,7 +30,7 @@ class Analyzer:
         except subprocess.CalledProcessError as e:
             print(f"[WARN] readelf failed or file is not a dynamic ELF: {binary_path}")
             return []
-
+        
         so_files = []
         for line in result.stdout.splitlines():
             match = self._READELF_RE.search(line)
@@ -45,14 +45,13 @@ class Analyzer:
         packages = set()
         print(f"    Mapping {len(so_files)} extracted libraries to standard host packages...")
         
-        # Core injection: Binaries always need the standard C runtime
-        packages.add("libc6")
+        # FIX APPLIED: Removed packages.add("libc6") from this phase to protect target OS.
         
         for so_name in so_files:
             # Skip PF_RING custom compiled libraries
             if "libpfring" in so_name:
                 continue
-                
+            
             try:
                 # Use dpkg -S on the raw filename to find its parent package
                 result = subprocess.run(['dpkg', '-S', so_name], capture_output=True, text=True, check=True)
@@ -70,6 +69,6 @@ class Analyzer:
                                 packages.add(pkg)
             except subprocess.CalledProcessError:
                 pass
-                
+        
         print(f"    [*] Base mapped packages: {packages}")
         return packages

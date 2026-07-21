@@ -1,4 +1,3 @@
-
 # ARM64 Cross-Architecture Offline Packager
 
 A specialized deployment engine designed to bundle ARM64 (aarch64) compiled applications—including complex directory toolchains and Python projects—into standalone `.deb` installers.
@@ -27,8 +26,8 @@ To circumvent the limitations of standard cross-compilation packaging, this plat
 The output `.deb` file acts as a delivery mechanism. It contains:
 
 *   **`DEBIAN/control`:** Dynamically generated metadata enforcing the `Architecture: arm64` constraint.
-*   **`data.tar` Structure:** The core executable binaries mapped to `/usr/bin/` and a nested cache of cross-downloaded `.deb` dependencies stored securely inside `/opt/airgap/<name>/deps/`.
-*   **`DEBIAN/postinst` Script:** A maintainer script injected into the package. Upon installation on the target machine, this script extracts the nested dependencies and invokes `dpkg -i` to install them locally before finalizing the deployment via `ldconfig`.
+*   **`data.tar` Structure:** The core executable binaries mapped safely to `/usr/local/bin/` (preventing core OS command collisions) and a nested cache of cross-downloaded `.deb` and `.whl` dependencies stored securely inside `/opt/airgap/<name>/deps/`.
+*   **`DEBIAN/postinst` Script:** A maintainer script injected into the package. To bypass `dpkg` frontend locks safely, this script spawns a detached background daemon upon installation on the target machine. This daemon extracts the nested dependencies, invokes `dpkg -i` to install system libraries, runs `pip3 install --no-index` for offline Python wheels, and finalizes the deployment via `ldconfig`.
 
 ---
 
@@ -37,11 +36,11 @@ The output `.deb` file acts as a delivery mechanism. It contains:
 The system follows a strictly linear, pipeline-based architecture:
 
 1.  **Input Ingestion (`main.py`):** An interactive CLI validates the input modality (binary path, project folder, or installed package). It takes the target system architecture (`arm64`), the type of input, and the package metadata. It performs mandatory string sanitization to strip invisible whitespace and carriage returns, preventing `dpkg-deb` from encountering malformed field errors during compilation.
-2.  **Cross-Compilation('compiler.py'):** Based on the input type detected in the previous step, if the user provides raw source code (such as C or C++) rather than a pre-compiled executable, this stage invokes the cross-compiler (e.g., `aarch64-linux-gnu-gcc`). Its exact role is to translate the high-level, human-readable source code into low-level ARM64 machine code. Because the host system runs on AMD64, the cross-compiler explicitly targets the ARM architecture to ensure the resulting 1s and 0s are physically readable by the isolated VM. This step is a strict prerequisite, as it must generate the architecture-specific binary before the system can analyze it for dependencies.
+2.  **Cross-Compilation (`compiler.py`):** Based on the input type detected in the previous step, if the user provides raw source code (such as C or C++) rather than a pre-compiled executable, this stage invokes the cross-compiler (e.g., `aarch64-linux-gnu-gcc`). Its exact role is to translate the high-level, human-readable source code into low-level ARM64 machine code. Because the host system runs on AMD64, the cross-compiler explicitly targets the ARM architecture to ensure the resulting 1s and 0s are physically readable by the isolated VM.
 3.  **Static Analysis (`analyzer.py`):** Traditional dynamic analysis (`ldd`) crashes when executed against foreign architectures. Instead, the analyzer employs `readelf -d` to statically parse the ELF headers of the binary and extract `(NEEDED)` shared libraries (`.so`). It filters out virtual kernel objects (e.g., `linux-vdso.so.1`) and maps the remaining logical libraries to their root Debian packages using `dpkg -S`.
-4.  **BFS Resolution (`resolver.py`):** The system queries `apt-cache depends <package>:arm64` to establish the dependency graph. It utilizes a Breadth-First Search (BFS) to map out every single sub-dependency required by the code, capturing both `Depends` and `PreDepends`. It actively filters out optional bloat (`--recommends`, `--suggests`), meta-packages, and core system essentials (e.g., `base-files`) while tracking visited nodes to prevent circular dependency loops (e.g., Package A needs B, and B needs A).
+4.  **BFS Resolution (`resolver.py`):** The system queries `apt-cache depends <package>:arm64` to establish the dependency graph. It utilizes a Breadth-First Search (BFS) to map out every single sub-dependency required by the code. **Crucially, it references a strict `SYSTEM_BLACKLIST` to actively filter out core OS essentials (e.g., `libc6`, `systemd`, `libpam0g`)**, preventing the packager from overwriting foundational target machine drivers and corrupting the VM.
 5.  **Cross-Acquisition (`downloader.py`):** This module forces multi-architecture downloads by appending the `:arm64` suffix to `apt-get download <package>:arm64` requests. For Python projects, it runs `pip download --platform aarch64`. This forces the Ubuntu servers to deliver `aarch64` compiled binaries into a local temporary staging folder, avoiding installation on the AMD64 host and protecting the host machine from cross-architecture corruption.
-6.  **Assembly (`builder.py`):** Structures the cache into a simulated Linux root filesystem layout, placing binaries in `/usr/bin/` and storing downloaded `.deb` dependencies hidden inside `/opt/airgap/`. It dynamically generates metadata, injects executable installer scripts (`chmod 0o755`), and compiles the final wrapper using `dpkg-deb --build`.
+6.  **Assembly (`builder.py`):** Structures the cache into a simulated Linux root filesystem layout, placing binaries in the collision-safe `/usr/local/bin/` and bundling downloaded `.deb`, `.whl`, and `.tar.gz` dependencies inside `/opt/airgap/`. It dynamically generates metadata, injects executable installer scripts (`chmod 0o755`), and compiles the final wrapper using `dpkg-deb --build`.
 
 ---
 
@@ -68,7 +67,7 @@ python3 main.py
 
 ### Phase 2: Deploying the Package (On ARM64 Target)
 
-Transfer the generated `.deb` file (via USB or secure physical media, or SCP to a VM) to the isolated target machine.
+Transfer the generated `.deb` file (via USB, secure physical media, or SCP) to the isolated target machine.
 
 ```bash
 # Standard offline installation via the Debian Package Manager
@@ -76,8 +75,11 @@ sudo dpkg -i pfring-suite_1.0.0_arm64.deb
 
 ```
 
+> **[!] CRITICAL EXECUTION WARNING:**
+> Because the package utilizes a detached background daemon to bypass `dpkg` locks, the terminal prompt will return immediately. **Do not execute your software right away.** Wait 10-15 seconds for the daemon to silently finish unpacking core dependencies and refreshing the `ldconfig` cache in the background.
+
 **Troubleshooting & File Conflicts:**
-If you are upgrading an existing package and `dpkg` halts with a "trying to overwrite /usr/bin/..." or "Broken pipe" error due to ownership collisions with legacy installations, force the transition safely using:
+If you are upgrading an existing package and `dpkg` halts with a "trying to overwrite..." or "Broken pipe" error due to ownership collisions with legacy installations, force the transition safely using:
 
 ```bash
 sudo dpkg -i --force-overwrite pfring-suite_1.0.0_arm64.deb
@@ -100,17 +102,16 @@ sudo pfcount -i eth0
 ### Test Case A: Multi-Binary Directory Extraction (PF_RING Framework)
 
 * **Context:** PF_RING is a high-speed network packet capture framework that bypasses standard kernel stacks. Its utilities require complex low-level C libraries (e.g., `libnuma` for memory architecture and `libnl` for Netlink sockets) that are rarely present on minimal air-gapped target installations.
-* **Objective:** Verify the tool can scan an entire framework directory, invoke cross-compilation (if needed), extract multiple executables, and map complex low-level dependencies natively.
+* **Objective:** Verify the tool can scan an entire framework directory, invoke cross-compilation (if needed), extract multiple executables, and map complex low-level dependencies natively without overwriting the core C-runtime.
 * **Execution:** Pointed the wizard (Option `[1]` Binary/Directory) to `~/PF_RING/userland/examples`.
 * **System Response:**
 * Recursively scanned the directory and compiled `.c` source files into ARM64 executables.
 * Identified 16 distinct ELF binaries (including `pfcount`, `pfsend`, `pfbridge`).
 * `readelf` statically identified critical kernel/memory libraries (`libc.so.6`, `libnl-3.so.200`, `libnuma.so.1`).
-* Mapped these files to standard Debian packages (`libc6`, `libnl-3-20`, `libnuma1`) and resolved their sub-dependencies.
-* *Note: The system logged a controlled failure for host cross-compilers (`libc6-arm64-cross`), correctly ignoring it as native ARM64 targets do not require cross-compilation suites to execute.*
+* The `SYSTEM_BLACKLIST` correctly blocked `libc6` from the queue to protect the target VM from system corruption. Mapped the remaining files to standard Debian packages (`libnl-3-20`, `libnuma1`) and resolved their sub-dependencies.
 
 
-* **Result:** Output a unified `pfring-suite_1.0.0_arm64.deb`. Upon execution of `dpkg -i` on the target node, the `postinst` script executed `ldconfig` to register the bundled dependencies, allowing `pfcount` to execute instantly and bind to `eth0`.
+* **Result:** Output a unified `pfring-suite_1.0.0_arm64.deb`. Upon execution of `dpkg -i` on the target node, the payloads were deployed safely to `/usr/local/bin/`, and the background daemon executed `ldconfig` to register the bundled dependencies, allowing `pfcount` to execute instantly and bind to `eth0`.
 
 ### Test Case B: Offline Python Project Bundling
 
@@ -119,10 +120,10 @@ sudo pfcount -i eth0
 * **System Response:**
 * Detected the Python execution flow based on user selection.
 * Executed `pip download --only-binary=:all: --platform manylinux2014_aarch64` to pull architecture-specific `.whl` files into a local staging `vendor/` directory, bypassing host installation.
-* Dynamically configured the `postinst` installer script for a Python-specific payload deployment.
+* Dynamically configured the `postinst` installer script to deploy a background Python-specific installer daemon.
 
 
-* **Result:** Output a `.deb` package. When deployed on the offline target node, the embedded `postinst` script successfully executed `pip3 install --no-index --find-links=vendor/`, ensuring the Python application was operational without attempting to reach the public PyPI indexing servers.
+* **Result:** Output a `.deb` package. When deployed on the offline target node, the embedded `postinst` daemon successfully executed `pip3 install --no-index --find-links=vendor/ vendor/*.whl`, ensuring the Python application was entirely operational without attempting to reach the public PyPI indexing servers.
 
 ---
 
@@ -130,10 +131,9 @@ sudo pfcount -i eth0
 
 While highly robust for standard deployments, system administrators should be aware of the following architectural constraints:
 
-* **Cross-Compilation Toolchains:** While the pipeline now handles source-to-binary cross-compilation during Stage 2, it assumes the AMD64 host has the required ARM toolchains (e.g., `gcc-aarch64-linux-gnu`) installed. If these are missing, compilation of raw C/C++ files will fail.
-* **Glibc Version Pinning:** Because the tool fetches packages from the build host's configured mirrors, severe version mismatches (especially with core runtime libraries like `libc6`/`glibc`) between the host and target can cause execution faults on the deployed machine. Strict OS version parity is highly recommended.
+* **Cross-Compilation Toolchains:** While the pipeline now handles source-to-binary cross-compilation during Stage 2, it assumes the AMD64 host has the required ARM toolchains (e.g., `aarch64-linux-gnu-gcc`) installed. If these are missing, compilation of raw C/C++ files will fail.
+* **Glibc Version Pinning:** Because the tool fetches packages from the build host's configured mirrors, severe version mismatches between the host and target can cause execution faults on the deployed machine. Strict OS version parity is highly recommended.
 * **System Service Daemons:** If packaged binaries require dedicated `systemd` services to launch automatically on boot, those `.service` files currently must be added manually to the staging directories prior to the final assembly phase.
-* **Cross-Compiler Artifact Logging:** During analysis, the system may log warnings regarding host cross-compiler packages (e.g., `libc6-arm64-cross`) failing to download via `apt-get`. This is expected behavior and will not impact final target deployment.
 * **Distribution Lock:** Currently, the resolution engine is rigidly coupled to Debian/Ubuntu package managers (`dpkg` and `apt-cache`). Expanding this framework to support `rpm` (RedHat/CentOS) or `pacman` (Arch) would require further abstraction of the underlying system calls.
 
 ```

@@ -5,7 +5,6 @@ import shutil
 import sys
 import subprocess
 import re
-
 from analyzer import Analyzer
 from resolver import Resolver
 from downloader import Downloader
@@ -40,12 +39,14 @@ def get_package_binary(package_name):
     except subprocess.CalledProcessError:
         print(f"[ERROR] Package '{package_name}' is not found on this build host.")
         sys.exit(1)
+    
     bin_dirs = ['/usr/bin/', '/usr/sbin/', '/usr/local/bin/', '/bin/', '/sbin/']
     binaries = []
     for line in result.stdout.strip().splitlines():
         line = line.strip()
         if any(line.startswith(d) for d in bin_dirs) and os.path.isfile(line) and os.access(line, os.X_OK):
             binaries.append(line)
+    
     if not binaries:
         print(f"[ERROR] No matching global executable found for package '{package_name}'.")
         sys.exit(1)
@@ -53,6 +54,7 @@ def get_package_binary(package_name):
 
 def main():
     parser = argparse.ArgumentParser(description="Universal ARM64 Air-Gapped Package System")
+    
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--path", help="Path to Python source directory layout.")
     input_group.add_argument("--binary", nargs='+', help="Path(s) to ELF binaries or directory containing binaries.")
@@ -77,31 +79,30 @@ def main():
     pkg_name = args.name.strip().replace('\n', '').replace('\r', '') if args.name else None
     pkg_version = args.version.strip().replace('\n', '').replace('\r', '')
     pkg_description = args.description.strip().replace('\n', ' ').replace('\r', ' ')
-
+    
     success = False
     output_deb = ""
-
+    
     if args.path:
         project_path = os.path.abspath(args.path)
         if not analyzer.analyze_source(project_path):
             sys.exit(1)
+            
         if not pkg_name:
             pkg_name = os.path.basename(project_path).strip().replace('\n', '').replace('\r', '')
+            pkg_name = re.sub(r'[^a-z0-9\-\+\.]', '-', pkg_name.lower()).strip('-')
             
-        pkg_name = re.sub(r'[^a-z0-9\-\+\.]', '-', pkg_name.lower()).strip('-')
-        
         staging_dir = os.path.abspath(f"./tmp_staging_{pkg_name}")
         deps_dir = os.path.join(staging_dir, 'deps')
         payload_dir = os.path.join(staging_dir, 'payload')
         os.makedirs(deps_dir, exist_ok=True)
         os.makedirs(payload_dir, exist_ok=True)
-
+        
         if not downloader.download_arm64_wheels(project_path, deps_dir):
             shutil.rmtree(staging_dir, ignore_errors=True)
             sys.exit(1)
             
         shutil.copytree(project_path, payload_dir, dirs_exist_ok=True)
-
         output_deb = f"{pkg_name}_{pkg_version}_arm64.deb"
         
         builder = Builder(staging_dir=staging_dir)
@@ -135,9 +136,8 @@ def main():
         # 3. Use the first binary found to name the package (if not provided)
         if not pkg_name:
             pkg_name = os.path.basename(binary_paths[0]).strip().replace('\n', '').replace('\r', '')
+            pkg_name = re.sub(r'[^a-z0-9\-\+\.]', '-', pkg_name.lower()).strip('-')
             
-        pkg_name = re.sub(r'[^a-z0-9\-\+\.]', '-', pkg_name.lower()).strip('-')
-        
         # 4. Set up staging directories
         staging_dir = os.path.abspath(f"./tmp_staging_{pkg_name}")
         deps_dir = os.path.join(staging_dir, 'deps')
@@ -153,7 +153,7 @@ def main():
         downloader.download_arm64_debs(all_deps, deps_dir)
         for bp in binary_paths:
             shutil.copy2(bp, payload_dir)
-        
+            
         # 7. Build the final .deb
         output_deb = f"{pkg_name}_{pkg_version}_arm64.deb"
         builder = Builder(staging_dir=staging_dir)
@@ -162,7 +162,8 @@ def main():
             version=pkg_version, 
             description=pkg_description,
             output_path=output_deb, 
-            config={'install_mode': 'flat', 'install_prefix': '/usr/bin'}
+            # FIX: Target /usr/local/bin to avoid OS file collisions
+            config={'install_mode': 'flat', 'install_prefix': '/usr/local/bin'}
         )
         
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -184,7 +185,6 @@ def main():
                     else:
                         print(f"[WARN] Skipping non-ELF file: {abs_item}")
             binary_paths = resolved_paths
-
             if not binary_paths:
                 print("[ERROR] Failed to discover any valid compiled ELF binaries in the specified targets.")
                 sys.exit(1)
@@ -195,9 +195,8 @@ def main():
             
         if not pkg_name:
             pkg_name = os.path.basename(binary_paths[0]).strip().replace('\n', '').replace('\r', '')
+            pkg_name = re.sub(r'[^a-z0-9\-\+\.]', '-', pkg_name.lower()).strip('-')
             
-        pkg_name = re.sub(r'[^a-z0-9\-\+\.]', '-', pkg_name.lower()).strip('-')
-        
         staging_dir = os.path.abspath(f"./tmp_staging_{pkg_name}")
         deps_dir = os.path.join(staging_dir, 'deps')
         payload_dir = os.path.join(staging_dir, 'payload')
@@ -214,7 +213,7 @@ def main():
         
         for bp in binary_paths:
             shutil.copy2(bp, payload_dir)
-        
+            
         output_deb = f"{pkg_name}_{pkg_version}_arm64.deb"
         
         builder = Builder(staging_dir=staging_dir)
@@ -223,7 +222,8 @@ def main():
             version=pkg_version, 
             description=pkg_description,
             output_path=output_deb, 
-            config={'install_mode': 'flat', 'install_prefix': '/usr/bin'}
+            # FIX: Target /usr/local/bin to avoid OS file collisions
+            config={'install_mode': 'flat', 'install_prefix': '/usr/local/bin'}
         )
         
         shutil.rmtree(staging_dir, ignore_errors=True)
